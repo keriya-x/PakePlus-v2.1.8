@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能对账系统  (v2.2 designed by xuxiangkun)</title>
+    
+    <!-- 1. Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 3. Excel 处理库 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+
+    <style>
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .fade-in { animation: fadeIn 0.2s ease-in-out; }
+        .slide-up { animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .spinner { width: 14px; height: 14px; border: 2px solid currentColor; border-left-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .bg-match-auto { background-color: #dcfce7; } 
+        .bg-match-manual { background-color: #86efac; } 
+        .bg-mark-orange { background-color: #ffedd5; border-left: 4px solid #f97316 !important; }
+        .text-wrap-all { white-space: normal; word-break: break-all; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans h-screen flex flex-col overflow-hidden">
+    <div id="root" class="h-full flex flex-col"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- 图标 ---
+        const Icons = {
+            Refresh: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>,
+            Upload: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+            Magic: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.2 1.2L3 12l5.8 1.9a2 2 0 0 1 1.2 1.2L12 21l1.9-5.8a2 2 0 0 1 1.2-1.2L21 12l-5.8-1.9a2 2 0 0 1-1.2-1.2L12 3Z"/></svg>,
+            Search: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>,
+            Hand: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>,
+            Flag: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>,
+            Check: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>,
+            X: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+            Unlink: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><line x1="4" y1="20" x2="20" y2="4" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 2"/></svg>,
+            Wash: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M1 1h22"/></svg>,
+            Sort: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>,
+            Trash: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+        };
+
+        const Toast = ({ message, type, onClose }) => {
+            useEffect(() => { const timer = setTimeout(onClose, 2500); return () => clearTimeout(timer); }, [onClose]);
+            const config = {
+                success: { bg: 'bg-emerald-600', icon: <Icons.Check /> },
+                error: { bg: 'bg-rose-500', icon: <Icons.X /> },
+                warning: { bg: 'bg-amber-500', icon: <Icons.Flag /> },
+                info: { bg: 'bg-blue-500', icon: <Icons.Search /> }
+            }[type] || { bg: 'bg-slate-600', icon: <Icons.Search /> };
+            return (
+                <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-[70] px-4 py-2 rounded-full shadow-lg text-white flex items-center gap-2 slide-up ${config.bg} text-sm font-medium`}>
+                    {config.icon} <span>{message}</span>
+                </div>
+            );
+        };
+
+        const Modal = ({ title, children, onClose, footer, width = 'max-w-xl' }) => (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center z-50 p-4 fade-in">
+                <div className={`bg-white rounded-xl shadow-2xl w-full ${width} flex flex-col max-h-[90vh] overflow-hidden`}>
+                    <div className="p-4 border-b bg-slate-50 flex justify-between items-center shrink-0">
+                        <h3 className="font-bold text-slate-700">{title}</h3>
+                        <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><Icons.X /></button>
+                    </div>
+                    <div className="flex-1 overflow-hidden relative flex flex-col">{children}</div>
+                    {footer && <div className="p-4 border-t bg-slate-50 flex justify-end gap-3 shrink-0">{footer}</div>}
+                </div>
+            </div>
+        );
+
+        const App = () => {
+            const [mode, setMode] = useState('standard');
+            const [dataA, setDataA] = useState([]);
+            const [dataB, setDataB] = useState([]);
+            const [fileNames, setFileNames] = useState({ A: null, B: null });
+            const [alignedRows, setAlignedRows] = useState([]);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [matchCounter, setMatchCounter] = useState(1);
+            
+            const [sortMode, setSortMode] = useState('priority');
+            const [toast, setToast] = useState(null);
+
+            const [showSumModal, setShowSumModal] = useState(false);
+            const [sumState, setSumState] = useState({ target: null, candidates: [], loading: false });
+
+            const [showWashModal, setShowWashModal] = useState(false);
+            const [washState, setWashState] = useState({ candidates: [], selection: new Set() });
+
+            const [showManual, setShowManual] = useState(false);
+            const [manualState, setManualState] = useState({ 
+                isComplex: false, 
+                targetItem: null, targetSide: null, 
+                poolA: [], poolB: [], selA: new Set(), selB: new Set(), searchA: '', searchB: '' 
+            });
+
+            const toCents = (num) => Math.round(parseFloat(num || 0) * 100);
+            const formatMoney = (num) => num ? num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
+            const showToast = (msg, type='info') => setToast({ message: msg, type });
+
+            const stats = useMemo(() => {
+                let unmatchA = 0, unmatchB = 0, pendingCount = 0;
+                alignedRows.forEach(r => {
+                    if (r.status === 'unmatched' || r.status === 'marked') {
+                        if (r.a) unmatchA += r.a.amount;
+                        if (r.b) unmatchB += r.b.amount;
+                        pendingCount++;
+                    }
+                });
+                const diff = mode === 'internal' ? (unmatchA + unmatchB) : (unmatchA - unmatchB);
+                return { unmatchA, unmatchB, diff, pendingCount };
+            }, [alignedRows, mode]);
+
+            const displayedRows = useMemo(() => {
+                let rows = [...alignedRows];
+                if (sortMode === 'amount-asc') {
+                    rows.sort((a,b) => (a.a?.amount||a.b?.amount) - (b.a?.amount||b.b?.amount));
+                } else if (sortMode === 'amount-desc') {
+                    rows.sort((a,b) => (b.a?.amount||b.b?.amount) - (a.a?.amount||a.b?.amount));
+                } else if (sortMode === 'priority') {
+                    const score = r => {
+                        if (r.status === 'marked') return 0;
+                        if (r.status === 'unmatched') return 1;
+                        if (r.status === 'manual_matched') return 2;
+                        if (r.status === 'matched') return 3;
+                        return 4;
+                    };
+                    rows.sort((a,b) => score(a) - score(b));
+                }
+                return rows;
+            }, [alignedRows, sortMode]);
+
+            // --- 修复了文件读取逻辑 ---
+            const handleUpload = (e, side) => {
+                const f = e.target.files[0];
+                if(!f) return;
+                setFileNames(prev => ({ ...prev, [side]: f.name }));
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    try {
+                        const wb = XLSX.read(evt.target.result, { type: 'binary' });
+                        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
+                        
+                        if (!rows || rows.length === 0) return;
+
+                        // 智能表头探测
+                        const firstRow = rows[0].map(x => String(x||'').trim());
+                        const headerKeywords = /用途|摘要|备注|说明|金额|借贷|收支/;
+                        const hasHeader = firstRow.some(cell => headerKeywords.test(cell));
+
+                        let pIdx = 0, aIdx = 1;
+                        let dataRows = rows; // 默认不切片（假设无表头）
+
+                        if (hasHeader) {
+                            // 如果检测到关键词，判定有表头
+                            const foundP = firstRow.findIndex(x => /用途|摘要|备注|说明/.test(x));
+                            const foundA = firstRow.findIndex(x => /金额|借贷|收支/.test(x));
+                            if (foundP > -1) pIdx = foundP;
+                            if (foundA > -1) aIdx = foundA;
+                            dataRows = rows.slice(1); // 跳过表头
+                        }
+                        
+                        const clean = [];
+                        dataRows.forEach((r, i) => {
+                            // 增强金额解析：去除逗号
+                            let rawAmt = r[aIdx];
+                            if (typeof rawAmt === 'string') rawAmt = rawAmt.replace(/,/g, '');
+                            
+                            const amt = parseFloat(rawAmt);
+                            if (!isNaN(amt) && amt !== 0) {
+                                clean.push({ 
+                                    id: `${side}-${i}-${Date.now()}`, 
+                                    source: side, 
+                                    usage: String(r[pIdx] || ''), 
+                                    amount: amt, 
+                                    matched: false 
+                                });
+                            }
+                        });
+                        clean.sort((a,b) => a.amount - b.amount);
+                        if (side === 'A') setDataA(clean); else setDataB(clean);
+                        showToast(`${side}表读取成功 (识别${hasHeader?'有':'无'}表头)`, 'success');
+                    } catch (e) { showToast("解析失败", 'error'); }
+                };
+                reader.readAsBinaryString(f);
+            };
+
+            const alignData = () => {
+                setIsProcessing(true);
+                setTimeout(() => {
+                    const listA = JSON.parse(JSON.stringify(dataA));
+                    const listB = JSON.parse(JSON.stringify(dataB));
+                    const rows = [];
+                    let mId = 1;
+                    const mapB = {};
+                    listB.forEach((item, idx) => {
+                        const v = toCents(item.amount);
+                        if (!mapB[v]) mapB[v] = [];
+                        mapB[v].push({ item, idx, used: false });
+                    });
+                    listA.forEach(itemA => {
+                        const valA = toCents(itemA.amount);
+                        const target = mode === 'internal' ? -valA : valA;
+                        let match = null;
+                        if (mapB[target]) match = mapB[target].find(x => !x.used);
+                        if (match) {
+                            match.used = true;
+                            itemA.matched = true; itemA.matchId = mId;
+                            match.item.matched = true; match.item.matchId = mId;
+                            rows.push({ a: itemA, b: match.item, status: 'matched' });
+                            mId++;
+                        } else {
+                            rows.push({ a: itemA, b: null, status: 'unmatched' });
+                        }
+                    });
+                    Object.values(mapB).flat().forEach(x => { if (!x.used) rows.push({ a: null, b: x.item, status: 'unmatched' }); });
+                    setAlignedRows(rows);
+                    setMatchCounter(mId);
+                    setIsProcessing(false);
+                    setSortMode('priority');
+                    showToast("智能核对完成", 'success');
+                }, 300);
+            };
+
+            const openManual = (row, side) => {
+                const poolA = alignedRows.filter(r => r.a && !r.a.matched && (r.status==='unmatched'||r.status==='marked')).map(r => r.a);
+                const poolB = alignedRows.filter(r => r.b && !r.b.matched && (r.status==='unmatched'||r.status==='marked')).map(r => r.b);
+                const targetItem = side === 'A' ? row.a : row.b;
+                const selA = new Set(); const selB = new Set();
+                if (side === 'A') selA.add(targetItem.id); else selB.add(targetItem.id);
+                setManualState({ isComplex: false, targetItem, targetSide: side, poolA, poolB, selA, selB, searchA: '', searchB: '' });
+                setShowManual(true);
+            };
+
+            const toggleManualSel = (id, side) => {
+                if (!manualState.isComplex && side === manualState.targetSide) return;
+                const s = new Set(side === 'A' ? manualState.selA : manualState.selB);
+                if (s.has(id)) s.delete(id); else s.add(id);
+                setManualState(prev => ({ ...prev, [side === 'A' ? 'selA' : 'selB']: s }));
+            };
+
+            const confirmManual = () => {
+                const newRows = [...alignedRows];
+                const mId = matchCounter;
+                const update = (id, side) => {
+                    const r = newRows.find(x => (side==='A'?x.a?.id:x.b?.id) === id);
+                    if (r) { const c = side==='A'?r.a:r.b; c.matched = true; c.matchId = mId; c.isCombination = true; r.status = 'manual_matched'; }
+                };
+                manualState.selA.forEach(id => update(id, 'A')); manualState.selB.forEach(id => update(id, 'B'));
+                setAlignedRows(newRows); setMatchCounter(mId + 1); setShowManual(false); showToast("手动核销成功", 'success');
+            };
+
+            const manualStats = useMemo(() => {
+                let sA=0, sB=0;
+                manualState.poolA.forEach(i=>{if(manualState.selA.has(i.id)) sA+=i.amount});
+                manualState.poolB.forEach(i=>{if(manualState.selB.has(i.id)) sB+=i.amount});
+                const diff = mode === 'internal' ? (sA + sB) : (sA - sB);
+                return { sA, sB, diff };
+            }, [manualState, mode]);
+
+            const unmatchRow = (row) => {
+                if(!confirm("确定取消此匹配？")) return;
+                const mId = row.a?.matchId || row.b?.matchId;
+                const newRows = alignedRows.map(r => {
+                    if ((r.a?.matchId === mId) || (r.b?.matchId === mId)) {
+                        if(r.a) { r.a.matched=false; r.a.matchId=null; r.a.isCombination=false; }
+                        if(r.b) { r.b.matched=false; r.b.matchId=null; r.b.isCombination=false; }
+                        return { ...r, status: 'unmatched' };
+                    }
+                    return r;
+                });
+                setAlignedRows(newRows); showToast("已还原", 'success');
+            };
+
+            const checkWash = () => {
+                const cands = [];
+                ['A', 'B'].forEach(side => {
+                    const list = alignedRows.filter(r => { const it=side==='A'?r.a:r.b; return it && !it.matched && (r.status==='unmatched'||r.status==='marked'); }).map(r => ({...(side==='A'?r.a:r.b), _rIdx: alignedRows.indexOf(r)}));
+                    const map = {}; list.forEach(i => { const v=toCents(i.amount); if(!map[v]) map[v]=[]; map[v].push(i); });
+                    Object.keys(map).forEach(k => { const v = parseInt(k); if(v > 0 && map[-v]) { const posL = map[v], negL = map[-v]; for(let i=0; i<Math.min(posL.length, negL.length); i++) cands.push({ id:`w-${side}-${i}-${Date.now()}`, side, pos: posL[i], neg: negL[i] }); } });
+                });
+                if(cands.length) { setWashState({ candidates: cands, selection: new Set(cands.map((_, i) => i)) }); setShowWashModal(true); } else showToast("未发现同表冲销", 'info');
+            };
+
+            const confirmWash = () => {
+                const newRows = [...alignedRows];
+                washState.selection.forEach(idx => { const p = washState.candidates[idx]; [p.pos, p.neg].forEach(x => { const r = newRows[x._rIdx]; const c = p.side==='A'?r.a:r.b; c.matched=true; c.isWash=true; r.status='wash'; }); });
+                setAlignedRows(newRows); setShowWashModal(false); showToast("冲销成功", 'success');
+            };
+
+            const openAutoSum = (row, side) => {
+                const item = side === 'A' ? row.a : row.b;
+                setSumState(prev => ({ ...prev, loading: true, target: item, side, rIdx: alignedRows.indexOf(row) }));
+                setTimeout(() => {
+                    const searchSide = side === 'A' ? 'B' : 'A';
+                    const targetCents = toCents(mode === 'internal' ? -item.amount : item.amount);
+                    let pool = alignedRows.filter(r => { const it = searchSide==='A'?r.a:r.b; return it && !it.matched && (r.status==='unmatched'||r.status==='marked'); }).map(r => searchSide==='A'?r.a:r.b);
+                    pool.sort((a,b) => Math.abs(b.amount) - Math.abs(a.amount));
+                    const solve = (nums, target) => {
+                        const res = [];
+                        const backtrack = (start, curSum, path) => {
+                            if (res.length || path.length > 5) return;
+                            if (Math.abs(curSum - target) < 0.1) { res.push([...path]); return; }
+                            for (let i = start; i < nums.length; i++) {
+                                if (target > 0 && curSum + toCents(nums[i].amount) > target + 1 && nums[i].amount > 0) continue;
+                                backtrack(i + 1, curSum + toCents(nums[i].amount), [...path, nums[i]]);
+                            }
+                        };
+                        backtrack(0, 0, []); return res[0];
+                    };
+                    const res = solve(pool, targetCents);
+                    if(res) { setSumState(p => ({ ...p, candidates: res, loading: false })); setShowSumModal(true); } else { showToast("未找到凑数方案", 'info'); setSumState(p => ({ ...p, loading: false })); }
+                }, 50);
+            };
+
+            const confirmAutoSum = () => {
+                const newRows = [...alignedRows]; const { candidates, side, rIdx } = sumState; const mId = matchCounter; const tr = newRows[rIdx]; (side==='A'?tr.a:tr.b).matched=true; (side==='A'?tr.a:tr.b).matchId=mId; tr.status='manual_matched';
+                candidates.forEach(c => { const r = newRows.find(x => (side==='A'?x.b?.id:x.a?.id) === c.id); if(r) { const cell=side==='A'?r.b:r.a; cell.matched=true; cell.matchId=mId; cell.isCombination=true; r.status='manual_matched'; } });
+                setAlignedRows(newRows); setMatchCounter(mId + 1); setShowSumModal(false);
+            };
+
+            const exportExcel = () => {
+                if(!alignedRows.length) return;
+                const head = ['状态', 'ID', mode==='internal'?'我方摘要':'A表摘要', mode==='internal'?'我方金额':'A表金额', mode==='internal'?'对方摘要':'B表摘要', mode==='internal'?'对方金额':'B表金额'];
+                const body = displayedRows.map(r => {
+                    let st = '差异', bg = 'FFFFFF';
+                    if (r.status === 'matched') { st = '自动匹配'; bg = 'DCFCE7'; }
+                    else if (r.status === 'manual_matched') { st = '人工核对'; bg = '86EFAC'; }
+                    else if (r.status === 'marked') { st = '待补账'; bg = 'FFEDD5'; }
+                    else if (r.status === 'wash') { st = '冲销'; bg = 'F1F5F9'; }
+                    const s = { fill: { fgColor: { rgb: bg } } };
+                    const ns = { ...s, numFmt: '#,##0.00' }; 
+                    return [{v:st,s}, {v:r.a?.matchId||r.b?.matchId||'',s}, {v:r.a?.usage||'',s}, {v:r.a?.amount||'',t:'n',s:ns}, {v:r.b?.usage||'',s}, {v:r.b?.amount||'',t:'n',s:ns}];
+                });
+                const ws = XLSX.utils.aoa_to_sheet([[...head], ...body]); 
+                ws['!cols'] = [{wch: 12}, {wch: 10}, {wch: 30}, {wch: 18}, {wch: 30}, {wch: 18}];
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Result"); XLSX.writeFile(wb, "对账结果.xlsx");
+            };
+            
+            const clearAll = () => { setDataA([]); setDataB([]); setAlignedRows([]); setFileNames({A:null,B:null}); };
+
+            return (
+                <div className="flex flex-col h-full">
+                    {toast && <Toast {...toast} onClose={()=>setToast(null)} />}
+                    <header className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center shrink-0 shadow-sm z-20">
+                        <div className="flex items-center gap-4">
+                            <h1 className="text-xl font-extrabold text-slate-800 flex items-center gap-2"><span className="bg-blue-600 text-white p-1.5 rounded-lg"><Icons.Magic /></span> 智能对账 <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">v2.2 designed by xuxiangkun</span></h1>
+                            {alignedRows.length>0 && <span className="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-bold border border-orange-200">待处理: {stats.pendingCount} 行</span>}
+                            <div className="bg-slate-100 p-1 rounded-lg flex text-xs font-bold"><button onClick={()=>!alignedRows.length&&setMode('standard')} className={`px-3 py-1.5 rounded-md transition ${mode==='standard'?'bg-white text-blue-600 shadow-sm':'text-slate-400'}`}>标准模式</button><button onClick={()=>!alignedRows.length&&setMode('internal')} className={`px-3 py-1.5 rounded-md transition ${mode==='internal'?'bg-white text-purple-600 shadow-sm':'text-slate-400'}`}>内部往来</button></div>
+                        </div>
+                        <div className="flex gap-2">
+                            {alignedRows.length>0 && <><button onClick={checkWash} className="bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition"><Icons.Wash /> 检查同表冲销</button><button onClick={exportExcel} className="bg-emerald-600 text-white hover:bg-emerald-700 px-3 py-2 rounded-lg text-sm font-bold shadow-sm transition">导出结果</button><button onClick={clearAll} className="text-rose-500 hover:bg-rose-50 px-3 py-2 rounded-lg text-sm font-bold transition">清空</button></>}
+                        </div>
+                    </header>
+
+                    <main className="flex-1 overflow-hidden bg-slate-50 relative flex flex-col">
+                        {alignedRows.length === 0 ? (
+                            <div className="flex-1 flex items-center justify-center p-8 fade-in">
+                                <div className="grid md:grid-cols-2 gap-8 w-full max-w-4xl">
+                                    {['A', 'B'].map(side => (<div key={side} className="bg-white border-2 border-dashed border-slate-200 rounded-3xl p-12 text-center hover:border-blue-400 hover:bg-blue-50/10 transition"><h3 className="text-lg font-bold text-slate-700 mb-2">{mode==='internal'?(side==='A'?'我方明细':'对方明细'):(side+'表文件')}</h3>{fileNames[side]?<div className="text-emerald-600 font-bold bg-emerald-50 inline-block px-4 py-1 rounded-full text-sm">{fileNames[side]}</div>:<label className="cursor-pointer inline-block mt-4 bg-blue-600 text-white px-6 py-2.5 rounded-xl shadow-lg shadow-blue-200 font-bold hover:scale-105 transition">上传 Excel <input type="file" className="hidden" accept=".xlsx,.xls" onChange={e=>handleUpload(e, side)} /></label>}</div>))}
+                                    {dataA.length>0&&dataB.length>0&&( <div className="md:col-span-2 text-center mt-6 flex gap-4 justify-center">
+                                        <button onClick={alignData} disabled={isProcessing} className="bg-slate-800 text-white px-12 py-4 rounded-2xl text-xl font-bold shadow-xl hover:bg-slate-900 transition flex items-center gap-3">{isProcessing?<div className="spinner border-white/30 border-l-white"></div>:<Icons.Magic />} 开始核对</button>
+                                        <button onClick={clearAll} className="bg-white text-rose-500 border-2 border-rose-200 px-8 py-4 rounded-2xl text-xl font-bold hover:bg-rose-50 transition flex items-center gap-3"><Icons.Trash /> 清空</button>
+                                    </div>)}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex-1 overflow-hidden flex flex-col">
+                                <div className="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center shrink-0">
+                                    <div className="text-xs text-slate-500 font-bold ml-2">已加载: {alignedRows.length} 行数据</div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-slate-500 font-bold flex items-center gap-1"><Icons.Sort /> 排序:</span>
+                                        <select value={sortMode} onChange={e=>setSortMode(e.target.value)} className="text-xs border-slate-300 rounded-md py-1 px-2 text-slate-700 bg-white focus:ring-1 focus:ring-blue-500 outline-none shadow-sm">
+                                            <option value="priority">待处理优先 (红/橙在前)</option>
+                                            <option value="amount-asc">金额 (小 → 大)</option>
+                                            <option value="amount-desc">金额 (大 → 小)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="flex-1 overflow-auto">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="sticky top-0 z-10 bg-slate-100 text-slate-500 text-xs font-bold uppercase border-b border-slate-200">
+                                            <tr><th className="p-4 w-24">状态</th><th className="p-4 text-right">{mode==='internal'?'我方':'A'} 金额</th><th className="p-4 w-1/4">摘要</th><th className="p-4 text-right">{mode==='internal'?'对方':'B'} 金额</th><th className="p-4 w-1/4">摘要</th><th className="p-4 text-center w-36">操作</th></tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 text-sm bg-white">
+                                            {displayedRows.map((r, i) => {
+                                                let bg='bg-white', badge='差异', bColor='bg-rose-100 text-rose-700';
+                                                if(r.status==='matched'){ bg='bg-match-auto'; badge='自动'; bColor='bg-emerald-100 text-emerald-800'; }
+                                                if(r.status==='manual_matched'){ bg='bg-match-manual'; badge='人工'; bColor='bg-green-600 text-white'; }
+                                                if(r.status==='marked'){ bg='bg-mark-orange'; badge='补账'; bColor='bg-orange-100 text-orange-700'; }
+                                                if(r.status==='wash'){ bg='bg-slate-50 opacity-60'; badge='冲销'; bColor='bg-slate-200 text-slate-500'; }
+                                                return (
+                                                    <tr key={i} className={`${bg} hover:brightness-95 transition`}>
+                                                        <td className="p-4"><span className={`px-2 py-0.5 rounded text-xs font-bold ${bColor}`}>{badge}</span></td>
+                                                        <td className={`p-4 text-right font-mono ${r.a?.isCombination?'text-blue-600 font-bold':''}`}>{formatMoney(r.a?.amount)}</td>
+                                                        <td className="p-4 text-slate-500 text-wrap-all min-w-[200px]">{r.a?.usage}</td>
+                                                        <td className={`p-4 text-right font-mono ${r.b?.isCombination?'text-blue-600 font-bold':''}`}>{formatMoney(r.b?.amount)}</td>
+                                                        <td className="p-4 text-slate-500 text-wrap-all min-w-[200px]">{r.b?.usage}</td>
+                                                        <td className="p-4 flex justify-center gap-1">
+                                                            {(r.status==='unmatched'||r.status==='marked') && <><button onClick={()=>openAutoSum(r, r.a?'A':'B')} className="p-1.5 text-blue-500 hover:bg-blue-100 rounded" title="智能凑数"><Icons.Search /></button><button onClick={()=>openManual(r, r.a?'A':'B')} className="p-1.5 text-indigo-500 hover:bg-indigo-100 rounded" title="手动核销"><Icons.Hand /></button><button onClick={()=>{const nr=[...alignedRows];const idx=alignedRows.indexOf(r);if(idx>-1){nr[idx].status=nr[idx].status==='marked'?'unmatched':'marked';setAlignedRows(nr)}}} className={`p-1.5 rounded ${r.status==='marked'?'text-orange-500':'text-slate-300 hover:text-orange-500'}`} title="标记"><Icons.Flag /></button></>}
+                                                            {(r.status==='matched'||r.status==='manual_matched') && <button onClick={()=>unmatchRow(r)} className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded" title="取消核对"><Icons.Unlink /></button>}
+                                                        </td>
+                                                    </tr>
+                                                )
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {alignedRows.length > 0 && <footer className="h-10 bg-slate-800/90 backdrop-blur text-white flex items-center justify-between px-6 text-xs font-bold z-30 shrink-0"><div className="flex gap-6"><span>A未平: <span className="font-mono text-emerald-300">{formatMoney(stats.unmatchA)}</span></span><span>B未平: <span className="font-mono text-emerald-300">{formatMoney(stats.unmatchB)}</span></span></div><div className={`flex items-center gap-2 ${Math.abs(stats.diff)<0.01 ? 'text-emerald-400' : 'text-rose-400'}`}><span>差额: {formatMoney(stats.diff)}</span>{Math.abs(stats.diff)<0.01 && <Icons.Check />}</div></footer>}
+
+                    {showSumModal && <Modal title="智能凑数" onClose={()=>setShowSumModal(false)} footer={<button onClick={confirmAutoSum} className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold">确认合并</button>}><div className="space-y-3"><div className="bg-blue-50 p-3 rounded-lg flex justify-between font-bold text-blue-800 text-sm"><span>目标</span><span>{formatMoney(sumState.target?.amount)}</span></div><div className="space-y-2 max-h-60 overflow-y-auto">{sumState.candidates.map((c,i)=>(<div key={i} className="flex justify-between p-2 border rounded bg-white text-sm"><span className="text-wrap-all w-2/3 text-slate-600">{c.usage}</span><span className="font-mono font-bold text-emerald-600">+{formatMoney(c.amount)}</span></div>))}</div></div></Modal>}
+                    {showWashModal && <Modal title="冲销确认" width="max-w-2xl" onClose={()=>setShowWashModal(false)} footer={<button onClick={confirmWash} className="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-bold">确认冲销</button>}><div className="bg-amber-50 text-amber-800 text-xs p-3 rounded mb-2">勾选正负抵消项</div><div className="space-y-2 max-h-[60vh] overflow-y-auto">{washState.candidates.map((p,i)=>{const ck=washState.selection.has(i);return(<div key={i} onClick={()=>{const s=new Set(washState.selection);if(s.has(i))s.delete(i);else s.add(i);setWashState(prev=>({...prev,selection:s}))}} className={`flex items-center p-2 border rounded cursor-pointer ${ck?'bg-blue-50 border-blue-300':'hover:bg-slate-50'}`}><input type="checkbox" checked={ck} readOnly className="mr-3" /><div className="flex-1 grid grid-cols-2 gap-4 text-sm"><div className="flex justify-between border-r pr-2"><span className="text-wrap-all w-32 text-slate-500">{p.neg.usage}</span><span className="text-rose-500 font-mono">{formatMoney(p.neg.amount)}</span></div><div className="flex justify-between"><span className="text-emerald-600 font-mono">+{formatMoney(p.pos.amount)}</span><span className="text-wrap-all w-32 text-slate-500 text-right">{p.pos.usage}</span></div></div></div>)})}</div></Modal>}
+                    {showManual && <Modal title={manualState.isComplex ? "多对多核销" : "手动核销 (一对多)"} width="max-w-4xl" onClose={()=>setShowManual(false)} footer={<div className="flex justify-between w-full items-center"><div className="text-sm space-x-4"><span>左选: <b className="font-mono">{formatMoney(manualStats.sA)}</b></span><span>右选: <b className="font-mono">{formatMoney(manualStats.sB)}</b></span><span className={Math.abs(manualStats.diff)<0.01?'text-emerald-600 font-bold':'text-rose-500 font-bold'}>{mode==='internal'?'合计':'差额'}: {formatMoney(manualStats.diff)}</span></div><button onClick={confirmManual} disabled={Math.abs(manualStats.diff)>0.01} className="px-5 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold disabled:bg-slate-300">确认</button></div>}><div className="flex flex-col h-[60vh]">{!manualState.isComplex && <div className="flex justify-end mb-2"><button onClick={()=>setManualState(p=>({...p, isComplex:true}))} className="text-xs text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded font-bold">切换到多对多 &rarr;</button></div>}<div className="flex h-full gap-4">{['A', 'B'].map(side => {const isTargetSide=!manualState.isComplex && side===manualState.targetSide;const list=manualState[`pool${side}`];const sel=manualState[`sel${side}`];const search=manualState[`search${side}`];return(<div key={side} className={`flex-1 flex flex-col border rounded-xl overflow-hidden ${isTargetSide?'bg-slate-50 border-slate-300':'border-slate-200'}`}><div className="p-2 border-b bg-slate-50 flex justify-between items-center"><span className="font-bold text-xs text-slate-500">{side}表 {isTargetSide?'(锁定)':''}</span>{!isTargetSide&&<input type="text" placeholder="搜索..." className="text-xs px-2 py-1 rounded border w-32" value={search} onChange={e=>setManualState(p=>({...p, [`search${side}`]:e.target.value}))} />}</div><div className="flex-1 overflow-y-auto p-1 space-y-1 bg-white">{list.filter(i=>isTargetSide?(i.id===manualState.targetItem.id):(i.usage.includes(search)||String(i.amount).includes(search))).map(item=>(<div key={item.id} onClick={()=>toggleManualSel(item.id, side)} className={`p-2 rounded border text-xs flex justify-between items-center transition cursor-pointer ${sel.has(item.id)?'bg-indigo-50 border-indigo-400':'border-transparent hover:bg-slate-50'} ${isTargetSide?'cursor-not-allowed opacity-80':''}`}><div className="flex items-center gap-2 overflow-hidden"><div className={`w-3 h-3 rounded-full border flex-shrink-0 ${sel.has(item.id)?'bg-indigo-500 border-indigo-500':'border-slate-300'}`}></div><span className="text-wrap-all w-32 text-slate-600">{item.usage}</span></div><span className="font-mono font-medium">{formatMoney(item.amount)}</span></div>))}</div></div>)}) }</div></div></Modal>}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
