@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>银行代发智能核查终端 (v2.5 designed by xuxiangkun)</title>
+    
+    <!-- 基础库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        .cell-error { background-color: #fee2e2; color: #b91c1c; position: relative; }
+        .cell-error::after {
+            content: attr(data-error);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #b91c1c;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+            display: none;
+            z-index: 20;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .cell-error:hover::after { display: block; }
+        
+        .animate-fade-in { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 h-screen flex flex-col overflow-hidden">
+
+    <div id="root" class="h-full flex flex-col"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- 1. 银行规则数据库 ---
+        const BANK_DATABASE = [
+            { name: "中国建设银行", aliases: ["建行", "建设银行", "Construction Bank"], isCCB: true, lengths: [16, 19] },
+            { name: "中国工商银行", aliases: ["工行", "工商银行", "ICBC"], isCCB: false, lengths: [19] },
+            { name: "中国农业银行", aliases: ["农行", "农业银行", "ABC"], isCCB: false, lengths: [19] },
+            { name: "中国银行", aliases: ["中行", "BOC"], isCCB: false, lengths: [19] },
+            { name: "中国邮政储蓄银行", aliases: ["邮储", "邮政", "邮政银行", "PSBC"], isCCB: false, lengths: [19] },
+            { name: "交通银行", aliases: ["交行", "交通", "BOCOM"], isCCB: false, lengths: [17, 19] },
+            { name: "招商银行", aliases: ["招行", "CMB"], isCCB: false, lengths: [16, 19] },
+            { name: "平安银行", aliases: ["平安"], isCCB: false, lengths: [16, 19] },
+            { name: "民生银行", aliases: ["民生"], isCCB: false, lengths: [16] },
+            { name: "光大银行", aliases: ["光大"], isCCB: false, lengths: [16] },
+            { name: "中信银行", aliases: ["中信"], isCCB: false, lengths: [16] },
+            { name: "浦发银行", aliases: ["浦发"], isCCB: false, lengths: [16] },
+            { name: "兴业银行", aliases: ["兴业"], isCCB: false, lengths: [16, 18] },
+            { name: "广发银行", aliases: ["广发"], isCCB: false, lengths: [16, 19] },
+            { name: "华夏银行", aliases: ["华夏"], isCCB: false, lengths: [16] },
+            { name: "农村商业银行", aliases: ["农商行", "农商", "农村信用社", "农信社"], isCCB: false, lengths: [16, 19] }
+        ];
+
+        // --- 2. 目标列定义 ---
+        const TARGET_COLS = [
+            { key: 'index', label: '序号（必填）', type: 'auto', width: 'w-16' },
+            { key: 'accountNo', label: '账号（必填）', type: 'map', required: true, keywords: ['卡号', '账号', '银行卡'], width: 'w-48' },
+            { key: 'accountName', label: '户名（必填）', type: 'map', required: true, keywords: ['姓名', '户名', '收款人'], width: 'w-32' },
+            { key: 'amount', label: '金额（必填）', type: 'map', required: true, keywords: ['金额', '实发', '工资', '应发'], width: 'w-32' },
+            { key: 'interbankFlag', label: '跨行标识', type: 'auto_calc', desc: '建行0 他行1', width: 'w-24' },
+            { key: 'bankName', label: '行名', type: 'map', required: true, keywords: ['行名', '银行', '开户行'], width: 'w-48' },
+            { key: 'bankCode', label: '联行行号', type: 'empty', desc: '选填', width: 'w-32' },
+            { key: 'summary', label: '摘要', type: 'fixed', default: '代发工资', width: 'w-32' },
+            { key: 'remark', label: '备注', type: 'fixed', default: '', width: 'w-32' }
+        ];
+
+        // --- 3. 核心算法工具 ---
+
+        // 识别表头行 (Top-Down)
+        const detectHeaderRowIndex = (data) => {
+            if (!data || data.length === 0) return 0;
+            let bestRowIdx = 0;
+            let maxScore = -1;
+            const scanLimit = Math.min(data.length, 15);
+            const allKeywords = TARGET_COLS.filter(c => c.keywords).flatMap(c => c.keywords);
+
+            for (let i = 0; i < scanLimit; i++) {
+                const row = data[i];
+                let score = 0;
+                if (Array.isArray(row)) {
+                    row.forEach(cell => {
+                        const cellStr = String(cell || '').toLowerCase();
+                        if (allKeywords.some(k => cellStr.includes(k))) score++;
+                    });
+                }
+                if (score > maxScore) {
+                    maxScore = score;
+                    bestRowIdx = i;
+                }
+            }
+            return maxScore > 0 ? bestRowIdx : 0;
+        };
+
+        // 智能识别表尾干扰行并剔除 (Bottom-Up)
+        const removeFooterRows = (rows, mapping, headers) => {
+            if (!rows || rows.length === 0) return [];
+            
+            const footerKeywords = ['合计', '总计', '制表', '审核', '批准', '会计', '出纳', '共', '页', 'Total', 'Sum', '签字', '日期'];
+            let endIndex = rows.length;
+            
+            let accIdx = -1;
+            let amtIdx = -1;
+            
+            if (mapping && headers) {
+                accIdx = headers.indexOf(mapping.accountNo);
+                amtIdx = headers.indexOf(mapping.amount);
+            }
+
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const row = rows[i];
+                if (!row || row.length === 0 || row.every(cell => !cell)) { endIndex = i; continue; }
+                const rowStr = row.join(' ').toLowerCase();
+                if (footerKeywords.some(k => rowStr.includes(k.toLowerCase()))) { endIndex = i; continue; }
+
+                if (accIdx !== -1) {
+                    const accVal = row[accIdx];
+                    if (!accVal || String(accVal).trim().length < 5) { endIndex = i; continue; }
+                }
+                if (amtIdx !== -1) {
+                    const amtVal = row[amtIdx];
+                    if (!amtVal || (isNaN(parseFloat(String(amtVal).replace(/,/g, ''))) && /[\u4e00-\u9fa5]/.test(String(amtVal)))) {
+                        endIndex = i;
+                        continue;
+                    }
+                }
+                const filledCells = row.filter(c => c !== undefined && c !== null && String(c).trim() !== '').length;
+                if (filledCells < 2) { endIndex = i; continue; }
+                break;
+            }
+            return rows.slice(0, endIndex);
+        };
+
+        const generateAutoMapping = (headers) => {
+            const map = {};
+            TARGET_COLS.forEach(col => { if(col.type === 'fixed') map[col.key] = col.default; });
+            const usedHeaders = new Set();
+            TARGET_COLS.forEach(target => {
+                if (target.type !== 'map') return;
+                const match = headers.find(h => {
+                    if (usedHeaders.has(h)) return false;
+                    const hStr = String(h || '').toLowerCase().trim();
+                    if (hStr === target.label.replace('（必填）','')) return true;
+                    return target.keywords.some(k => hStr.includes(k));
+                });
+                if (match) { map[target.key] = match; usedHeaders.add(match); } 
+                else { map[target.key] = ""; }
+            });
+            return map;
+        };
+
+        const analyzeBankInfo = (rawBankName, accountNo) => {
+            if (!rawBankName) return { isCCB: false, valid: true, msg: "行名为空" };
+            const normalizedName = String(rawBankName).trim();
+            const cleanAccount = String(accountNo || '').trim().replace(/\s/g, '');
+            const bankRule = BANK_DATABASE.find(b => b.name === normalizedName || b.aliases.some(alias => normalizedName.includes(alias)));
+            const isCCB = bankRule ? bankRule.isCCB : (normalizedName.includes("建行") || normalizedName.includes("建设"));
+            let isValid = true;
+            let errorMsg = "";
+
+            if (bankRule && cleanAccount.length > 0) {
+                if (!bankRule.lengths.includes(cleanAccount.length)) { isValid = false; errorMsg = `${bankRule.name}卡号应为${bankRule.lengths.join('或')}位`; }
+            } else if (!bankRule && cleanAccount.length > 0) {
+                if (cleanAccount.length < 10 || cleanAccount.length > 30) { isValid = false; errorMsg = "未知银行，卡号长度异常"; }
+            }
+            return { isCCB, isValid, errorMsg, matchedBank: bankRule ? bankRule.name : "其他银行" };
+        };
+
+        // --- 组件：Sheet选择弹窗 ---
+        const SheetSelectionModal = ({ pendingFiles, onConfirm, onCancel }) => {
+            // 修改点一：初始状态为空对象 (默认不选)
+            const [selected, setSelected] = useState({});
+            
+            const toggle = (key) => setSelected(prev => ({ ...prev, [key]: !prev[key] }));
+            const handleConfirm = () => {
+                const result = [];
+                pendingFiles.forEach(f => {
+                    f.sheets.forEach(s => {
+                        if (selected[`${f.name}::${s.name}`]) result.push({ file: f, sheet: s });
+                    });
+                });
+                onConfirm(result);
+            };
+
+            const toggleAll = () => {
+                const allKeys = [];
+                pendingFiles.forEach(f => f.sheets.forEach(s => allKeys.push(`${f.name}::${s.name}`)));
+                const allSelected = allKeys.every(k => selected[k]);
+                
+                const nextState = {};
+                if (!allSelected) {
+                    allKeys.forEach(k => nextState[k] = true);
+                }
+                setSelected(nextState);
+            }
+
+            return (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col animate-fade-in">
+                        <div className="p-5 border-b bg-blue-50 rounded-t-xl flex justify-between items-center">
+                            <h3 className="font-bold text-lg text-blue-800">请选择工作表</h3>
+                            <button onClick={toggleAll} className="text-sm text-blue-600 hover:text-blue-800 font-medium">全选/反选</button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-6 custom-scroll">
+                            {pendingFiles.map((file, idx) => (
+                                <div key={idx} className="mb-6">
+                                    <h4 className="font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                                        <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                        {file.name}
+                                    </h4>
+                                    <div className="grid grid-cols-2 gap-3 pl-6">
+                                        {file.sheets.map((sheet, sIdx) => {
+                                            const key = `${file.name}::${sheet.name}`;
+                                            return (
+                                                <label key={sIdx} className={`flex items-center p-3 rounded border cursor-pointer transition ${selected[key] ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-slate-200 hover:bg-slate-50'}`}>
+                                                    <input type="checkbox" checked={!!selected[key]} onChange={() => toggle(key)} className="w-4 h-4 text-blue-600 rounded"/>
+                                                    <div className="ml-3 text-sm truncate">{sheet.name} <span className="text-gray-400 text-xs ml-1">({sheet.rowCount}行)</span></div>
+                                                </label>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="p-5 border-t flex justify-end gap-3 bg-slate-50 rounded-b-xl">
+                            <button onClick={onCancel} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded">取消</button>
+                            <button onClick={handleConfirm} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded shadow font-medium">确认导入</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 组件：导出文件名确认弹窗 ---
+        const ExportFilenameModal = ({ defaultName, onConfirm, onCancel }) => {
+            const [fileName, setFileName] = useState(defaultName);
+            const inputRef = useRef(null);
+            useEffect(() => { if(inputRef.current) inputRef.current.select(); }, []);
+            return (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl w-96 p-6 animate-fade-in">
+                        <h3 className="font-bold text-lg text-slate-800 mb-4">导出设置</h3>
+                        <div className="mb-4">
+                            <label className="block text-sm font-medium text-slate-600 mb-2">文件名</label>
+                            <div className="flex items-center border border-slate-300 rounded-lg focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden">
+                                <input ref={inputRef} type="text" value={fileName} onChange={(e) => setFileName(e.target.value)} className="flex-1 px-3 py-2 outline-none text-slate-800"/>
+                                <span className="px-3 bg-slate-100 text-slate-500 border-l border-slate-300 text-sm">.xls</span>
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={onCancel} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">取消</button>
+                            <button onClick={() => onConfirm(fileName)} className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded shadow font-medium">确认导出</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 主程序 ---
+        function App() {
+            const [tables, setTables] = useState([]);
+            const [activeTableId, setActiveTableId] = useState(null);
+            const [pendingFiles, setPendingFiles] = useState(null);
+            const [showExportModal, setShowExportModal] = useState(false);
+            const [errorMsg, setErrorMsg] = useState("");
+
+            const handleFileUpload = async (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length === 0) return;
+                e.target.value = '';
+                const loadedFiles = [];
+                await Promise.all(files.map(file => new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        try {
+                            const wb = XLSX.read(evt.target.result, { type: 'binary' });
+                            const sheets = [];
+                            wb.SheetNames.forEach(sheetName => {
+                                const ws = wb.Sheets[sheetName];
+                                const rawData = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                                if (rawData && rawData.length > 0) sheets.push({ name: sheetName, data: rawData, rowCount: rawData.length });
+                            });
+                            if (sheets.length > 0) loadedFiles.push({ name: file.name, sheets });
+                        } catch(e) { console.error(e); }
+                        resolve();
+                    };
+                    reader.readAsBinaryString(file);
+                })));
+                if (loadedFiles.length > 0) setPendingFiles(loadedFiles);
+            };
+
+            const confirmImport = (selections) => {
+                const newTables = [];
+                selections.forEach(({ file, sheet }) => {
+                    const rawData = sheet.data;
+                    const headerRowIdx = detectHeaderRowIndex(rawData);
+                    const headers = rawData[headerRowIdx];
+                    let dataRows = rawData.slice(headerRowIdx + 1);
+                    const mapping = generateAutoMapping(headers);
+                    dataRows = removeFooterRows(dataRows, mapping, headers);
+
+                    if (dataRows.length > 0) {
+                        newTables.push({
+                            id: `${file.name}-${sheet.name}-${Math.random()}`,
+                            fileName: file.name,
+                            sheetName: sheet.name,
+                            headers: headers,
+                            rows: dataRows,
+                            mapping: mapping,
+                            selected: true
+                        });
+                    }
+                });
+                setTables(prev => [...prev, ...newTables]);
+                if (!activeTableId && newTables.length > 0) setActiveTableId(newTables[0].id);
+                setPendingFiles(null);
+            };
+
+            const updateMapping = (tableId, key, val) => {
+                setTables(prev => prev.map(t => t.id === tableId ? { ...t, mapping: { ...t.mapping, [key]: val } } : t));
+            };
+
+            const handleExportClick = () => {
+                const selectedTables = tables.filter(t => t.selected);
+                if (selectedTables.length === 0) { setErrorMsg("请选择要导出的表"); return; }
+                const invalid = selectedTables.filter(t => TARGET_COLS.some(c => c.required && !t.mapping[c.key]));
+                if (invalid.length > 0) { setErrorMsg(`映射不完整：${invalid.map(t => t.sheetName).join(', ')}`); return; }
+                let hasError = false;
+                selectedTables.forEach(t => {
+                    t.rows.forEach(r => {
+                        const idxB = t.headers.indexOf(t.mapping.bankName);
+                        const idxA = t.headers.indexOf(t.mapping.accountNo);
+                        if(idxB!==-1 && idxA!==-1 && !analyzeBankInfo(r[idxB], r[idxA]).isValid) hasError = true;
+                    })
+                });
+                if (hasError && !confirm("⚠️ 检测到部分卡号可能存在错误，是否继续？")) return;
+                setShowExportModal(true);
+            };
+
+            const executeExport = (fileName) => {
+                const selectedTables = tables.filter(t => t.selected);
+                const finalData = [];
+                finalData.push(TARGET_COLS.map(c => c.label));
+                let globalIndex = 1;
+                selectedTables.forEach(table => {
+                    table.rows.forEach(row => {
+                        if (!row || row.length === 0) return;
+                        const getVal = (key) => {
+                            if (TARGET_COLS.find(c=>c.key===key).type === 'fixed') return table.mapping[key];
+                            const header = table.mapping[key];
+                            const idx = table.headers.indexOf(header);
+                            return idx !== -1 ? row[idx] : '';
+                        };
+                        const check = analyzeBankInfo(getVal('bankName'), getVal('accountNo'));
+                        const newRow = TARGET_COLS.map(col => {
+                            if (col.key === 'index') return globalIndex;
+                            if (col.key === 'interbankFlag') return check.isCCB ? '0' : '1';
+                            if (col.key === 'bankCode') return '';
+                            if (col.key === 'amount') {
+                                let val = parseFloat(String(getVal('amount')).replace(/,/g, ''));
+                                if (isNaN(val)) val = 0;
+                                return val.toFixed(2);
+                            }
+                            if (col.key === 'accountNo') return String(getVal('accountNo') || '').trim();
+                            return getVal(col.key);
+                        });
+                        finalData.push(newRow);
+                        globalIndex++;
+                    });
+                });
+                const ws = XLSX.utils.aoa_to_sheet(finalData);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "代发数据");
+                XLSX.writeFile(wb, `${fileName}.xls`, { bookType: 'xls' });
+                setShowExportModal(false);
+            };
+
+            const getDefaultFilename = () => {
+                const now = new Date();
+                return `代发工资${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+            };
+
+            const activeTable = tables.find(t => t.id === activeTableId);
+            
+            // 计算全局汇总信息 (修改点二：在上方红框位置显示的全局汇总)
+            const globalStats = useMemo(() => {
+                const selectedTables = tables.filter(t => t.selected);
+                let totalAmt = 0;
+                let totalCount = 0;
+                
+                selectedTables.forEach(table => {
+                    const idxAmount = table.headers.indexOf(table.mapping.amount);
+                    table.rows.forEach(row => {
+                         if(idxAmount !== -1) {
+                            const val = parseFloat(String(row[idxAmount] || '').replace(/,/g, ''));
+                            if (!isNaN(val)) totalAmt += val;
+                        }
+                        totalCount++;
+                    });
+                });
+                return { totalAmt, totalCount };
+            }, [tables]);
+
+            const activeStats = useMemo(() => {
+                if (!activeTable) return { totalAmount: 0, count: 0, errors: 0 };
+                let sum = 0, count = 0, errors = 0;
+                const idxAmount = activeTable.headers.indexOf(activeTable.mapping.amount);
+                const idxBank = activeTable.headers.indexOf(activeTable.mapping.bankName);
+                const idxAcc = activeTable.headers.indexOf(activeTable.mapping.accountNo);
+                activeTable.rows.forEach(row => {
+                    if(idxAmount !== -1) {
+                        const val = parseFloat(String(row[idxAmount] || '').replace(/,/g, ''));
+                        if (!isNaN(val)) sum += val;
+                    }
+                    count++;
+                    if (idxBank !== -1 && idxAcc !== -1 && !analyzeBankInfo(row[idxBank], row[idxAcc]).isValid) errors++;
+                });
+                return { totalAmount: sum, count, errors };
+            }, [activeTable, tables]);
+
+            return (
+                <div className="flex flex-col h-full font-sans">
+                    {pendingFiles && <SheetSelectionModal pendingFiles={pendingFiles} onConfirm={confirmImport} onCancel={() => setPendingFiles(null)} />}
+                    {showExportModal && <ExportFilenameModal defaultName={getDefaultFilename()} onConfirm={executeExport} onCancel={() => setShowExportModal(false)} />}
+
+                    {/* 顶部栏 */}
+                    <div className="bg-slate-800 text-white p-2 shadow-lg flex justify-between items-center shrink-0 z-20 h-16">
+                        <div className="flex items-center gap-3 pl-2">
+                            <div className="bg-blue-600 p-1.5 rounded"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                            <div>
+                                <h1 className="text-lg font-bold leading-none">银行代发终端</h1>
+                                <p className="text-[10px] text-slate-400 opacity-80 mt-1">v2.5 designed by xuxiangkun</p>
+                            </div>
+                        </div>
+
+                        {/* 修改点二：全局汇总显示区 */}
+                        <div className="flex-1 mx-8 bg-slate-700/50 rounded-lg border border-slate-600 px-4 py-1 flex items-center justify-between max-w-2xl">
+                            <span className="text-xs text-slate-300 font-bold uppercase tracking-wider">当前选中汇总 <span className="text-slate-500 font-normal">({tables.filter(t=>t.selected).length}个表)</span></span>
+                            <div className="flex gap-6 items-center">
+                                <div className="text-right">
+                                    <span className="text-xs text-slate-400 mr-2">总笔数</span>
+                                    <span className="font-mono font-bold text-lg text-white">{globalStats.totalCount}</span>
+                                </div>
+                                <div className="h-4 w-px bg-slate-600"></div>
+                                <div className="text-right">
+                                    <span className="text-xs text-slate-400 mr-2">汇总金额</span>
+                                    <span className="font-mono font-bold text-xl text-yellow-400">¥ {globalStats.totalAmt.toLocaleString('zh-CN', {minimumFractionDigits: 2})}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-3">
+                            <label className="bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded cursor-pointer transition shadow text-sm font-medium flex items-center gap-2 text-white">
+                                <span>📂 添加工资表</span>
+                                <input type="file" multiple accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} />
+                            </label>
+                            {tables.length > 0 && (
+                                <button onClick={handleExportClick} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 rounded transition shadow text-sm font-bold flex items-center gap-2 text-white">
+                                    <span>⬇ 导出代发明细</span>
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="flex-1 flex overflow-hidden">
+                        <div className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0 z-10">
+                            <div className="p-3 bg-slate-100 border-b text-xs font-bold text-slate-500">已加载工作表</div>
+                            <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scroll">
+                                {tables.map(t => (
+                                    <div key={t.id} onClick={() => setActiveTableId(t.id)} className={`p-3 rounded-lg border cursor-pointer relative group transition ${activeTableId === t.id ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-500' : 'bg-white border-slate-200 hover:border-blue-300'}`}>
+                                        <div className="flex items-start gap-2">
+                                            <input type="checkbox" checked={t.selected} onChange={(e) => {e.stopPropagation(); setTables(prev=>prev.map(x=>x.id===t.id?{...x,selected:!x.selected}:x))}} className="mt-1"/>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="text-sm font-medium truncate" title={t.fileName}>{t.fileName}</div>
+                                                <div className="text-xs text-slate-500 mt-1 truncate">{t.sheetName}</div>
+                                            </div>
+                                            <button onClick={(e)=>{e.stopPropagation();setTables(prev=>prev.filter(x=>x.id!==t.id))}} className="absolute top-1 right-1 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 p-1">✕</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {activeTable ? (
+                            <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
+                                <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center shadow-sm shrink-0">
+                                    <h2 className="font-bold text-slate-700 text-lg flex items-center gap-2">
+                                        {activeTable.sheetName}
+                                        {activeStats.errors > 0 && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full border border-red-200">发现 {activeStats.errors} 个异常</span>}
+                                    </h2>
+                                    <div className="flex gap-6 text-right opacity-60 grayscale hover:grayscale-0 transition-all" title="这是当前表的统计，非全局汇总">
+                                        <div><div className="text-xs text-slate-500 uppercase">当前表人数</div><div className="font-mono font-bold text-lg">{activeStats.count}</div></div>
+                                        <div className="h-8 w-px bg-slate-200"></div>
+                                        <div><div className="text-xs text-slate-500 uppercase">当前表金额</div><div className="font-mono font-bold text-2xl text-blue-600">¥ {activeStats.totalAmount.toLocaleString('zh-CN', {minimumFractionDigits: 2})}</div></div>
+                                    </div>
+                                </div>
+                                <div className="flex-1 flex overflow-hidden">
+                                    <div className="w-72 bg-white border-r border-slate-200 flex flex-col overflow-y-auto custom-scroll p-4 shrink-0">
+                                        <div className="text-xs font-bold text-slate-400 uppercase mb-4 flex items-center gap-1">源数据映射</div>
+                                        <div className="space-y-4">
+                                            {TARGET_COLS.map(col => {
+                                                if(col.type === 'auto' || col.type === 'auto_calc' || col.type === 'empty') return null;
+                                                if(col.type === 'fixed') return (
+                                                    <div key={col.key}>
+                                                        <label className="text-xs font-bold text-slate-600 block mb-1">{col.label}</label>
+                                                        <input type="text" value={activeTable.mapping[col.key]} onChange={e => updateMapping(activeTable.id, col.key, e.target.value)} className="w-full text-sm border border-slate-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"/>
+                                                    </div>
+                                                );
+                                                const isMapped = !!activeTable.mapping[col.key];
+                                                return (
+                                                    <div key={col.key} className="relative">
+                                                        <div className="flex justify-between mb-1">
+                                                            <label className="text-xs font-bold text-slate-600">{col.label} {col.required && <span className="text-red-500">*</span>}</label>
+                                                            {isMapped ? <span className="text-[10px] text-green-600 bg-green-50 px-1 rounded">已匹配</span> : <span className="text-[10px] text-red-500 bg-red-50 px-1 rounded">未匹配</span>}
+                                                        </div>
+                                                        <select value={activeTable.mapping[col.key] || ''} onChange={e => updateMapping(activeTable.id, col.key, e.target.value)} className={`w-full text-sm border rounded px-2 py-1.5 outline-none appearance-none ${isMapped ? 'border-slate-300' : 'border-red-300 bg-red-50'}`}>
+                                                            <option value="">-- 请选择源列 --</option>
+                                                            {activeTable.headers.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                                                        </select>
+                                                        <div className="absolute right-2 bottom-2 pointer-events-none text-gray-400">▼</div>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 overflow-auto custom-scroll bg-white">
+                                        <table className="w-full text-sm text-left border-collapse">
+                                            <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm text-xs text-slate-500 uppercase">
+                                                <tr>{TARGET_COLS.map(c => <th key={c.key} className={`px-4 py-3 font-semibold border-b whitespace-nowrap bg-slate-50 ${c.width}`}>{c.label}</th>)}</tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {activeTable.rows.map((row, rIdx) => {
+                                                    const getVal = (key) => { const h = activeTable.mapping[key]; const idx = activeTable.headers.indexOf(h); return idx !== -1 ? row[idx] : ''; };
+                                                    const check = analyzeBankInfo(getVal('bankName'), getVal('accountNo'));
+                                                    return (
+                                                        <tr key={rIdx} className="hover:bg-blue-50 transition-colors">
+                                                            {TARGET_COLS.map(c => {
+                                                                let displayVal = '-';
+                                                                let cellClass = `px-4 py-2 whitespace-nowrap text-slate-600 truncate max-w-[200px]`;
+                                                                let cellError = null;
+                                                                if (c.key === 'index') displayVal = rIdx + 1;
+                                                                else if (c.key === 'interbankFlag') displayVal = check.isCCB ? <span className="text-blue-600 font-bold">0 (建行)</span> : <span className="text-gray-500">1 (他行)</span>;
+                                                                else if (c.key === 'summary') displayVal = activeTable.mapping.summary;
+                                                                else if (c.key === 'bankCode') displayVal = '';
+                                                                else {
+                                                                    displayVal = getVal(c.key);
+                                                                    if (c.key === 'amount') {
+                                                                         const num = parseFloat(String(displayVal).replace(/,/g, ''));
+                                                                         displayVal = isNaN(num) ? '-' : num.toLocaleString('zh-CN', {minimumFractionDigits: 2});
+                                                                         cellClass += " font-mono font-medium text-blue-700";
+                                                                    }
+                                                                    if (c.key === 'accountNo' && !check.isValid) { cellClass += " cell-error cursor-help"; cellError = check.errorMsg; }
+                                                                }
+                                                                return <td key={c.key} className={cellClass} data-error={cellError} title={displayVal}>{displayVal}</td>
+                                                            })}
+                                                        </tr>
+                                                    )
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+                                <div className="text-6xl mb-4 opacity-20">🛡️</div>
+                                <p>请添加工资表开始智能核查</p>
+                            </div>
+                        )}
+                    </div>
+                    {errorMsg && <div className="fixed bottom-6 right-6 bg-red-600 text-white px-6 py-3 rounded-lg shadow-xl z-50 flex items-center gap-3 animate-bounce"><span>🚫 {errorMsg}</span><button onClick={() => setErrorMsg("")} className="ml-2 opacity-75 hover:opacity-100">✕</button></div>}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
